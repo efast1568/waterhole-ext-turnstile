@@ -2,102 +2,82 @@
 
 namespace Flectar\Turnstile\Fields;
 
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Validator;
 use Waterhole\Forms\Field;
 
 class Turnstile extends Field
 {
+    public function shouldRender(): bool
+    {
+        return config("waterhole.turnstile.site_key") &&
+            config("waterhole.turnstile.secret_key");
+    }
+
     public function render(): string
     {
-        $siteKey = config("waterhole.turnstile.site_key");
-
-        if (!$siteKey) {
-            return "";
-        }
-
-        $widgetId = "turnstile-" . \Illuminate\Support\Str::random(8);
-
-        return <<<blade
-            <div id="{$widgetId}" class="mb-4"></div>
+        // The template must be static: inline component templates are
+        // compiled to a file named after a hash of their contents.
+        return <<<'blade'
+            <div
+                data-turnstile
+                data-sitekey="{{ config('waterhole.turnstile.site_key') }}"
+            ></div>
 
             <script>
-                (function() {
-                    const widgetId = '{$widgetId}';
-                    const siteKey = @json(config('waterhole.turnstile.site_key'));
-
-                    function renderWidget() {
-                        const container = document.getElementById(widgetId);
-
-                        if (container && !container.innerHTML && typeof turnstile !== 'undefined') {
-                            try {
-                                turnstile.render('#' + widgetId, {
-                                    sitekey: siteKey,
-                                    theme: 'auto',
-                                    size: 'flexible',
-                                });
-                            } catch (e) {
-                                console.error('Turnstile render error:', e);
-                            }
-                        }
+                (function () {
+                    function cleanup() {
+                        document.querySelectorAll('[data-turnstile-id]').forEach(function (el) {
+                            window.turnstile.remove(el.dataset.turnstileId);
+                            delete el.dataset.turnstileId;
+                            el.replaceChildren();
+                        });
                     }
 
-                    window.onWaterholeTurnstileLoad = function() {
-                        renderWidget();
-                    };
-
-                    if (typeof turnstile !== 'undefined') {
-                        renderWidget();
+                    function render() {
+                        document.querySelectorAll('[data-turnstile]:not([data-turnstile-id])').forEach(function (el) {
+                            el.dataset.turnstileId = window.turnstile.render(el, {
+                                sitekey: el.dataset.sitekey,
+                                theme: document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
+                                size: 'flexible',
+                            });
+                        });
                     }
 
-                    document.addEventListener('turbo:load', function() {
-                        renderWidget();
-                    }, { once: true });
+                    if (window.turnstile) {
+                        return render();
+                    }
+
+                    window.onWaterholeTurnstileLoad = render;
+
+                    if (!document.querySelector('script[data-turnstile-api]')) {
+                        // Remove widgets before Turbo snapshots or replaces the page.
+                        document.addEventListener('turbo:before-cache', cleanup);
+                        document.addEventListener('turbo:before-render', cleanup);
+
+                        var script = document.createElement('script');
+                        script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=onWaterholeTurnstileLoad';
+                        script.async = true;
+                        script.dataset.turnstileApi = '';
+                        document.head.appendChild(script);
+                    }
                 })();
             </script>
-
-            <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=onWaterholeTurnstileLoad" async defer></script>
         blade;
     }
 
     public function validating(Validator $validator): void
     {
-        if (
-            !config("waterhole.turnstile.site_key") ||
-            !config("waterhole.turnstile.secret_key")
-        ) {
-            return;
-        }
-
         $validator->after(function (Validator $validator) {
             if ($validator->errors()->isNotEmpty()) {
                 return;
             }
 
-            $response = request()->input("cf-turnstile-response");
+            $token = $validator->getData()["cf-turnstile-response"] ?? null;
 
-            if (!$response) {
-                $validator
-                    ->errors()
-                    ->add(
-                        "turnstile",
-                        __("waterhole-turnstile::messages.failed"),
-                    );
-                return;
-            }
-
-            $json = Http::asForm()
-                ->post(
-                    "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-                    [
-                        "secret" => config("waterhole.turnstile.secret_key"),
-                        "response" => $response,
-                        "remoteip" => request()->ip(),
-                    ],
-                )
-                ->json();
-
-            if (empty($json["success"])) {
+            if (!$this->verify($token)) {
                 $validator
                     ->errors()
                     ->add(
@@ -106,5 +86,45 @@ class Turnstile extends Field
                     );
             }
         });
+    }
+
+    private function verify(mixed $token): bool
+    {
+        // Turnstile tokens are at most 2048 characters long.
+        if (!is_string($token) || $token === "" || strlen($token) > 2048) {
+            return false;
+        }
+
+        try {
+            $response = Http::asForm()
+                ->timeout(10)
+                ->post(
+                    "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+                    [
+                        "secret" => config("waterhole.turnstile.secret_key"),
+                        "response" => $token,
+                        "remoteip" => request()->ip(),
+                    ],
+                );
+        } catch (ConnectionException $e) {
+            report($e);
+
+            return false;
+        }
+
+        $errors = (array) $response->json("error-codes", []);
+
+        if (
+            array_intersect($errors, [
+                "missing-input-secret",
+                "invalid-input-secret",
+            ])
+        ) {
+            Log::warning("Turnstile secret key is invalid.", [
+                "errors" => $errors,
+            ]);
+        }
+
+        return $response->json("success") === true;
     }
 }

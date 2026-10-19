@@ -17,6 +17,8 @@ Secure your [Waterhole](https://waterhole.dev) community with Cloudflare Turnsti
 
 ### 📦 Installation
 
+Requires Waterhole 0.6 or 0.7.
+
 Install via Composer. Run the following command in your Waterhole root directory:
 
 ```bash
@@ -56,7 +58,7 @@ php artisan cache:clear
 
 ### 📄 License
 
-- Open-sourced under the [MIT License](https://github.com/flectar/flarum-ext-turnstile/blob/main/LICENSE).
+- Open-sourced under the [MIT License](https://github.com/flectar/waterhole-ext-turnstile/blob/main/LICENSE).
 
 ---
 
@@ -64,6 +66,6 @@ php artisan cache:clear
 
 - [Flectar](https://flectar.com/)
 - [Packagist - flectar/waterhole-turnstile](https://packagist.org/packages/flectar/waterhole-turnstile)
-- [GitHub Repo](https://github.com/flectar/waterhole-turnstile)
+- [GitHub Repo](https://github.com/flectar/waterhole-ext-turnstile)
 - [Composer](https://getcomposer.org/)
 - [Waterhole](https://waterhole.dev/)
